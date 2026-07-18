@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🌑 Nyx
+# Nyx
 
 <img src="assets/banner.png" alt="Nyx — privacy-first router for Raspberry Pi" width="100%">
 
