@@ -1,0 +1,8 @@
+
+## --- Added by nyx setup.sh ---
+## Transparent proxy port for redirected TCP client traffic
+TransPort 9040
+## DNS resolution through Tor (used for DNS leak protection in tor mode)
+DNSPort 5353
+## Run as the debian-tor user (referenced by firewall.py owner-match rule)
+RunAsDaemon 1

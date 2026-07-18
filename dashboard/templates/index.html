@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nyx</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 40px auto; background: #111; color: #eee; }
+  h1 { font-size: 1.4rem; }
+  .card { background: #1b1b1b; border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .modes button {
+    padding: 10px 18px; margin-right: 8px; border: none; border-radius: 6px;
+    background: #333; color: #eee; cursor: pointer; font-size: 0.95rem;
+  }
+  .modes button.active { background: #2e7d32; }
+  #btn-rotate { background: #1565c0; }
+  #btn-emergency { background: #b71c1c; float: right; }
+  .status-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #262626; }
+  .status-row span:first-child { color: #999; }
+  .big-ip { font-size: 1.6rem; font-weight: 600; letter-spacing: 0.5px; }
+  #error { color: #ff6b6b; margin-top: 10px; min-height: 1.2em; }
+  code { background: #262626; padding: 2px 6px; border-radius: 4px; }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2e7d32; margin-right: 6px; }
+  .pulse.down { background: #b71c1c; }
+  .banner { padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 0.9rem; }
+  .banner.warn { background: #4a3200; color: #ffcc66; }
+  .banner.critical { background: #4a0000; color: #ff9999; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .metric { text-align: center; }
+  .metric .val { font-size: 1.3rem; font-weight: 600; }
+  .metric .lbl { color: #999; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+  <h1>🛡️ Nyx — live</h1>
+
+  <div id="banners"></div>
+
+  <div class="card modes">
+    <button onclick="setMode('vpn')" id="btn-vpn">VPN</button>
+    <button onclick="setMode('tor')" id="btn-tor">Tor</button>
+    <button onclick="rotate()" id="btn-rotate">Rotate VPN Now</button>
+    <button onclick="emergencyStop()" id="btn-emergency">Emergency Stop</button>
+    <div id="error"></div>
+  </div>
+
+  <div class="card">
+    <div class="status-row"><span>🌍 Current Public IP</span><span class="big-ip" id="s-ip">-</span></div>
+    <div class="status-row"><span>🔐 Mode</span><span id="s-mode">-</span></div>
+    <div class="status-row"><span>VPN profile</span><span id="s-profile">-</span></div>
+    <div class="status-row"><span>Location</span><span id="s-geo">-</span></div>
+    <div class="status-row"><span>ISP</span><span id="s-isp">-</span></div>
+  </div>
+
+  <div class="card">
+    <strong>🔁 Rotation status</strong>
+    <div class="status-row"><span>Rotation enabled</span><span id="s-rot-enabled">-</span></div>
+    <div class="status-row"><span>Next rotation in</span><span id="s-rot-eta">-</span></div>
+    <div class="status-row"><span>Last rotation</span><span id="s-rot-last">-</span></div>
+  </div>
+
+  <div class="card">
+    <strong>📡 Bandwidth (live)</strong>
+    <div class="grid2" style="margin-top:10px;">
+      <div class="metric"><div class="val" id="s-bw-sent">-</div><div class="lbl">↑ sent</div></div>
+      <div class="metric"><div class="val" id="s-bw-recv">-</div><div class="lbl">↓ received</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status-row"><span>Tor running</span><span id="s-tor">-</span></div>
+    <div class="status-row"><span>IP forwarding</span><span id="s-fwd">-</span></div>
+    <div class="status-row"><span>CPU / Memory</span><span id="s-resource">-</span></div>
+    <div class="status-row"><span><span class="pulse" id="s-pulse"></span>Emergency stopped</span><span id="s-estop">-</span></div>
+  </div>
+
+  <div class="card">
+    <strong>📊 Logs (live)</strong>
+    <pre id="s-logs" style="max-height:220px; overflow-y:auto; font-size:0.75rem; color:#9dd; background:#0d0d0d; padding:10px; border-radius:6px; margin-top:8px; white-space:pre-wrap;">-</pre>
+  </div>
+
+  <p style="color:#777; font-size:0.85rem;">
+    Proxy always protects the Pi's own traffic in the background — it isn't a switchable mode.
+    Access this dashboard only via <code>ssh -L 5000:localhost:5000 pi@&lt;your-pi-ip&gt;</code>.
+    This is short-poll "live" (updates every 2s), not a websocket push.
+  </p>
+
+<script>
+function fmtBytes(bps) {
+  if (bps == null) return '-';
+  if (bps > 1024*1024) return (bps/1024/1024).toFixed(2) + ' MB/s';
+  if (bps > 1024) return (bps/1024).toFixed(1) + ' KB/s';
+  return bps.toFixed(0) + ' B/s';
+}
+function fmtEta(sec) {
+  if (sec == null) return '-';
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return `${m}m ${s}s`;
+}
+function fmtAgo(ts) {
+  if (!ts) return '-';
+  const sec = Math.floor(Date.now()/1000 - ts);
+  return `${sec}s ago`;
+}
+
+async function refreshStatus() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  if (!data.ok) {
+    document.getElementById('error').innerText = data.error;
+    return;
+  }
+  document.getElementById('error').innerText = '';
+  const s = data.result;
+
+  const banners = [];
+  if (s.rotation_degraded) {
+    banners.push('<div class="banner critical">⚠️ VPN rotation failed and rollback could not fully recover — check logs, may be blocked (fail closed).</div>');
+  }
+  if (s.resource && s.resource.warnings && s.resource.warnings.length) {
+    s.resource.warnings.forEach(w => banners.push(`<div class="banner warn">⚙️ ${w}</div>`));
+  }
+  document.getElementById('banners').innerHTML = banners.join('');
+
+  const ip = s.ip_info && s.ip_info.ip ? s.ip_info.ip : '-';
+  document.getElementById('s-ip').innerText = ip;
+  document.getElementById('s-mode').innerText = s.current_mode || '(none)';
+  document.getElementById('s-profile').innerText = s.current_vpn_profile || '-';
+
+  const geo = s.ip_info || {};
+  const location = [geo.city, geo.country].filter(Boolean).join(', ');
+  document.getElementById('s-geo').innerText = location || '-';
+  document.getElementById('s-isp').innerText = geo.isp || '-';
+
+  document.getElementById('s-rot-enabled').innerText = s.rotation_enabled;
+  document.getElementById('s-rot-eta').innerText = s.rotation_enabled ? fmtEta(s.next_rotation_eta_seconds) : '-';
+  document.getElementById('s-rot-last').innerText = fmtAgo(s.last_rotation_time);
+
+  const rate = s.bandwidth_rate || {};
+  document.getElementById('s-bw-sent').innerText = fmtBytes(rate.sent_bps);
+  document.getElementById('s-bw-recv').innerText = fmtBytes(rate.recv_bps);
+
+  document.getElementById('s-tor').innerText = s.tor_running;
+  document.getElementById('s-fwd').innerText = s.ip_forwarding;
+  document.getElementById('s-estop').innerText = s.emergency_stopped;
+  document.getElementById('s-pulse').classList.toggle('down', !s.current_mode || s.emergency_stopped);
+
+  const res2 = s.resource || {};
+  if (res2.cpu_percent != null) {
+    document.getElementById('s-resource').innerText =
+      `${res2.cpu_percent.toFixed(0)}% / ${res2.mem_percent.toFixed(0)}%`;
+  }
+
+  ['vpn', 'tor'].forEach(m => {
+    document.getElementById('btn-' + m).classList.toggle('active', s.current_mode === m);
+  });
+}
+
+async function setMode(mode) {
+  document.getElementById('error').innerText = 'Switching...';
+  const res = await fetch('/api/mode', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode})
+  });
+  const data = await res.json();
+  if (!data.ok) document.getElementById('error').innerText = data.error;
+  refreshStatus();
+}
+
+async function rotate() {
+  document.getElementById('error').innerText = 'Rotating VPN...';
+  const res = await fetch('/api/rotate', { method: 'POST' });
+  const data = await res.json();
+  if (!data.ok) document.getElementById('error').innerText = data.error;
+  refreshStatus();
+}
+
+async function emergencyStop() {
+  if (!confirm('This disables the kill switch and stops all tunnels. Continue?')) return;
+  const res = await fetch('/api/emergency_stop', { method: 'POST' });
+  const data = await res.json();
+  if (!data.ok) document.getElementById('error').innerText = data.error;
+  refreshStatus();
+}
+
+async function refreshLogs() {
+  try {
+    const res = await fetch('/api/logs');
+    const data = await res.json();
+    const el = document.getElementById('s-logs');
+    el.innerText = (data.lines || []).slice(-50).join('\n');
+    el.scrollTop = el.scrollHeight;
+  } catch (e) { /* daemon may not be up yet */ }
+}
+
+refreshStatus();
+refreshLogs();
+setInterval(refreshStatus, 2000);
+setInterval(refreshLogs, 4000);
+</script>
+</body>
+</html>

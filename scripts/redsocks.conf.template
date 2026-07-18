@@ -1,0 +1,19 @@
+base {
+    log_debug = off;
+    log_info = on;
+    log = "syslog:daemon";
+    daemon = on;
+    redirector = iptables;
+}
+
+redsocks {
+    local_ip = 127.0.0.1;
+    local_port = 12345;   # must match config.yaml proxy.redsocks_port
+
+    # Your upstream proxy -- fill these in
+    ip = 127.0.0.1;
+    port = 8080;
+    type = socks5;
+    # login = "user";
+    # password = "pass";
+}
