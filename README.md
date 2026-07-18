@@ -1,86 +1,202 @@
-# Nyx
+<div align="center">
 
-A Raspberry Pi that sits between your devices and the internet, forcing all
-traffic through a VPN, Tor, or a proxy — with a real kill switch, DNS leak
-protection, and a CLI/dashboard to control it.
+# 🌑 Nyx
 
-> Personal hobby project, not audited for production/adversarial use. If
-> your threat model is serious, treat this as a starting point, not a
-> hardened appliance.
+<img src="assets/banner.png" alt="Nyx — privacy-first router for Raspberry Pi" width="100%">
 
-## Features
+![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi-a4133c?style=for-the-badge) ![Focus](https://img.shields.io/badge/Focus-Privacy%20%26%20Networking-darkred?style=for-the-badge) ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=for-the-badge) ![Firewall](https://img.shields.io/badge/Firewall-iptables-2dd4bf?style=for-the-badge) ![Modes](https://img.shields.io/badge/Modes-VPN%20%7C%20Tor-gold?style=for-the-badge) ![Status](https://img.shields.io/badge/Status-Hobby%20Project-fb923c?style=for-the-badge) ![License](https://img.shields.io/badge/License-MIT-lightgrey?style=for-the-badge)
 
-- **Fail-closed kill switch** — `FORWARD`/`OUTPUT` default to `DROP`; traffic
-  only flows once a mode is actively applied.
-- **Switchable modes: VPN or Tor** — govern client-device traffic (`FORWARD`
-  chain + NAT `PREROUTING`).
-- **Always-on proxy layer** — routes the Pi's *own* outbound traffic
-  (updates, IP checks) through an upstream proxy via redsocks, independent
-  of the client-facing mode. See [Architecture](#architecture) for why this
-  isn't a third "mode."
-- **DNS leak protection** — DNS is explicitly redirected (Tor) or scoped to
-  the tunnel interface (VPN), for both client devices and the Pi itself.
-- **IPv6 leak protection** — blocked at both the `ip6tables` policy level
-  and the kernel (`sysctl`) level.
-- **VPN rotation** — cycles through configured VPN profiles on an interval,
-  with preflight checks and rollback if a rotation fails.
-- **Kill-switch watchdog** — detects a dropped tunnel and logs/attempts
-  recovery; the block itself is automatic (dead interface = no matching
-  rule), the watchdog adds detection and reconnect.
-- **CLI + dashboard**, both talking to a single daemon over a Unix socket
-  so they can't fight over iptables state.
+**A Raspberry Pi that sits between your devices and the internet, forcing all traffic through a VPN, Tor, or a proxy — with a real kill switch, DNS leak protection, and a CLI/dashboard to control it.**
 
-## Architecture
+</div>
 
-### Proxy is not a mode
+---
 
-A single packet can't be NAT-redirected to two destinations at once (proxy
-*and* VPN, or proxy *and* Tor) with plain iptables `REDIRECT`. So:
+# 📖 Overview
 
-- **Proxy (redsocks)** is an **always-on layer for the Pi's own outbound
-  traffic** — lives in the `OUTPUT` chain, chained to your upstream proxy
-  in `/etc/redsocks.conf`. Started at boot (`main.py`) and re-applied after
-  every mode switch.
-- **VPN / Tor** are the switchable modes and govern **client-device
-  traffic** — `FORWARD` chain + NAT `PREROUTING`.
+Nyx turns a Raspberry Pi into a fail-closed privacy gateway. Every device on your LAN routes through it, and the Pi enforces one of two switchable modes — **VPN** or **Tor** — while an always-on proxy layer handles the Pi's own outbound traffic.
 
-If you want client traffic double-wrapped (client → proxy → VPN, so your
-ISP sees a proxy connection instead of a raw WireGuard handshake), that's a
-heavier build: redsocks' upstream target would need to *be* the VPN's SOCKS
-capability, which WireGuard doesn't natively expose. Not implemented here.
+The project combines:
 
-### redsocks and UDP
+- Fail-closed `iptables` kill switch (`FORWARD`/`OUTPUT` default `DROP`)
+- Switchable **VPN** (WireGuard) / **Tor** client-traffic modes
+- Always-on upstream proxy layer for the Pi's own traffic (`redsocks`)
+- DNS and IPv6 leak protection at both the firewall and kernel level
+- VPN profile rotation with preflight checks and rollback
+- Kill-switch watchdog for tunnel-drop detection and recovery
+- CLI + local dashboard, both talking to one daemon over a Unix socket
 
-redsocks only proxies TCP. This is **fail-closed, not a leak**: default
-`OUTPUT`/`FORWARD` policy is `DROP`, and redsocks' `REDIRECT` rule only
-matches `-p tcp`. Unmatched UDP has nowhere to go and is dropped, not sent
-unprotected.
+> Personal hobby project, not audited for production/adversarial use. If your threat model is serious, treat this as a starting point, not a hardened appliance.
 
-- **VPN mode:** client UDP is explicitly allowed via `FORWARD ACCEPT -o
-  <vpn_if>`, so it goes through the tunnel fine.
-- **Tor mode:** non-DNS UDP (VoIP, games, QUIC/HTTP3) has no matching rule
-  and is simply blocked. Those app categories won't work in Tor mode —
-  worth knowing going in.
+---
 
-### Dashboard data
+# ✨ Features
 
-The dashboard is short-poll (2s interval), not push-based. It reads real
-data from `Controller.status()`: bandwidth rate from two consecutive
-`psutil` snapshots, rotation countdown from `vpn.rotation.interval_seconds`,
-and live CPU/mem. A true push-based view (Flask-SocketIO or SSE) would be a
-future upgrade.
+## Traffic Control
 
-## Requirements
+- Fail-closed kill switch — nothing routes until a mode is actively applied
+- Switchable modes: **VPN** or **Tor** (client-device traffic)
+- Always-on proxy layer for the Pi's own traffic, independent of client mode
+- VPN profile rotation on a timer, with preflight checks and automatic rollback on failed rotation
+- Emergency stop (full open, all tunnels down — confirmation required)
 
-- Raspberry Pi with two network paths (e.g. Ethernet in from your router,
-  Wi-Fi for client devices — or vice versa)
-- Raspberry Pi OS (Debian-based)
-- Root access (the daemon manages iptables/wg-quick/systemd)
+## Leak Protection
 
-## Setup
+- DNS leak protection — explicitly redirected (Tor) or scoped to the tunnel interface (VPN), for clients *and* the Pi itself
+- IPv6 leak protection — blocked at both `ip6tables` policy and kernel `sysctl` level
+- Kill-switch watchdog — detects a dropped tunnel, logs `CRITICAL`, attempts reconnect
+
+## Control
+
+- CLI (`cli.py --status / --mode / --rotate / --emergency-stop`)
+- Local dashboard (Flask, SSH-tunnel only, no built-in auth)
+- Single daemon owns firewall state — CLI and dashboard can't fight over `iptables`
+
+---
+
+# 🏗 System Architecture
+
+```text
+┌───────────────┐   ┌───────────────┐   ┌───────────────┐
+        │  Phone (Wi-Fi) │   │ Laptop (Wi-Fi) │   │  Other Device  │
+        └───────┬───────┘   └───────┬───────┘   └───────┬───────┘
+                │                   │                   │
+                └───────────────────┼───────────────────┘
+                                    ▼
+                        ┌────────────────────────┐
+                        │      Raspberry Pi       │
+                        │   (Nyx daemon + Wi-Fi)  │
+                        └────────────┬────────────┘
+                                     │
+                                     ▼
+                        ┌────────────────────────┐
+                        │  Proxy Chain (always on) │
+                        │        redsocks          │
+                        └────────────┬────────────┘
+                                     │
+                                     ▼
+                        ┌────────────────────────┐
+                        │   Selected Mode (one)    │
+                        │                          │
+                        │   ○ VPN                  │
+                        │   ○ Tor                  │
+                        │   ○ VPN (rotating)       │
+                        └────────────┬────────────┘
+                                     │
+                                     ▼
+                              ┌────────────┐
+                              │  Internet   │
+                              └────────────┘
+```
+
+**Why proxy isn't a third mode:** a single packet can't be NAT-redirected to two destinations (proxy *and* VPN/Tor) with plain `iptables REDIRECT`. So the proxy layer governs the Pi's own outbound traffic (`OUTPUT` chain) and runs always-on, while VPN/Tor remain the switchable modes governing client traffic (`FORWARD` chain + NAT `PREROUTING`). Full reasoning in [Architecture Notes](#-architecture-notes) below.
+
+---
+
+# 🛠 Technology Stack
+
+## Networking
+
+| Component | Technology |
+|------------|------------|
+| Firewall / kill switch | iptables / ip6tables |
+| VPN | WireGuard (`wg-quick`) |
+| Anonymity network | Tor |
+| Upstream proxy | redsocks (TCP only) |
+| IPv6 protection | `sysctl` + `ip6tables` |
+
+## Backend
+
+| Component | Technology |
+|------------|------------|
+| Language | Python 3.9+ |
+| Daemon ↔ client IPC | Unix domain socket |
+| Dashboard | Flask |
+| System metrics | psutil |
+| Process management | systemd |
+
+---
+
+# 🔍 Mode-Switch Flow
+
+```text
+CLI / Dashboard Request
+          │
+          ▼
+   Controller.set_mode()
+          │
+          ▼
+   firewall.lockdown_only()
+          │
+          ▼
+   Stop old service / Start new service
+          │
+          ▼
+   apply_routing_rules()
+          │
+          ▼
+   enable_proxy_chain()
+          │
+          ▼
+      Mode Active
+```
+
+Lockdown is applied *before* the new service starts, so there's no window where traffic could slip out unprotected between modes — the whole path fails closed by default.
+
+---
+
+# 📂 Project Structure
+
+```text
+nyx/
+│
+├── main.py               # daemon: owns Controller, IPC socket, monitor loop
+├── cli.py                 # CLI client (talks to daemon over Unix socket)
+├── config.yaml
+├── requirements.txt
+├── README.md
+├── CHANGELOG.md
+│
+├── core/
+│   ├── config_loader.py
+│   ├── controller.py      # mode-switch ordering & fail-closed logic (vpn|tor only)
+│   ├── scheduler.py       # VPN rotation thread
+│   └── watchdog.py        # kill-switch watchdog thread
+│
+├── network/
+│   ├── vpn_manager.py     # multi-profile support for rotation
+│   ├── tor_manager.py
+│   ├── proxy_manager.py   # always-on, not part of mode switching
+│   ├── firewall.py        # kill switch, proxy chain, DNS leak protection, NAT rules
+│   └── routing.py         # IP forwarding
+│
+├── monitor/
+│   ├── ip_monitor.py
+│   ├── bandwidth.py
+│   └── resource_monitor.py
+│
+├── logger/
+│   └── logger.py
+│
+├── dashboard/
+│   ├── app.py              # Flask, talks to daemon over Unix socket
+│   └── templates/index.html
+│
+├── scripts/
+│   ├── setup.sh
+│   ├── redsocks.conf.template
+│   ├── torrc.additions
+│   └── nyx.service
+│
+└── logs/
+```
+
+---
+
+# ⚙ Installation
 
 ```bash
-git clone <this repo> nyx
+git clone https://github.com/YOUR_USERNAME/nyx
 cd nyx
 sudo bash scripts/setup.sh
 ```
@@ -94,10 +210,13 @@ Then edit `config.yaml` — at minimum set:
 | `network.lan_subnet` | Your client-device subnet |
 | `vpn.config_path` | Path to your WireGuard config |
 
-If you plan to use proxy mode, also edit `/etc/redsocks.conf` with your
-upstream proxy details.
+If you plan to use proxy mode, also edit `/etc/redsocks.conf` with your upstream proxy details.
 
-## Running
+**Requirements:** a Raspberry Pi with two network paths (e.g. Ethernet in, Wi-Fi out to clients — or vice versa), Raspberry Pi OS (Debian-based), and root access (the daemon manages `iptables`/`wg-quick`/`systemd`).
+
+---
+
+# ▶ Running
 
 ```bash
 sudo ./venv/bin/python3 main.py
@@ -109,7 +228,9 @@ Or via systemd (after `setup.sh`):
 sudo systemctl enable --now nyx
 ```
 
-## Usage
+---
+
+# 🖥 Usage
 
 **CLI:**
 
@@ -129,102 +250,80 @@ ssh -L 5000:localhost:5000 pi@<pi-ip>
 # then open http://localhost:5000
 ```
 
-The dashboard has **no built-in authentication** — it's bound to
-`127.0.0.1` on the Pi for that reason. Reach it via SSH tunnel; don't
-expose it on your LAN or the internet as-is.
+The dashboard has **no built-in authentication** — it's bound to `127.0.0.1` on the Pi for that reason. Reach it via SSH tunnel; don't expose it on your LAN or the internet as-is.
 
-## Verification checklist
+---
 
-These need a real Pi — iptables/wg-quick/systemd behavior isn't testable
-in a dev sandbox, only syntax and logic.
+# 🧪 Verification Checklist
+
+These need a real Pi — `iptables`/`wg-quick`/`systemd` behavior isn't testable in a dev sandbox, only syntax and logic.
 
 1. **Kill switch blocks forwarding on VPN drop**
    ```bash
    sudo python3 cli.py --mode vpn
    sudo wg-quick down wg0          # simulate VPN drop
-   # from a CLIENT device (not the Pi):
-   ping 8.8.8.8                    # should fail
+   ping 8.8.8.8                    # from a CLIENT device — should fail
    ```
-   If the ping succeeds, check `sudo iptables -S FORWARD`.
+2. **DNS doesn't leak** (`tor` mode) — `nslookup example.com` from a client; confirm port 53 redirect via `sudo iptables -t nat -S PREROUTING`.
+3. **No SSH lockout** — test the kill switch from an SSH session on a LAN client, confirm it survives `enable_kill_switch()`.
+4. **IPv6 isn't leaking** — `curl -6 https://ifconfig.co` should fail/timeout if `block_ipv6: true`.
+5. **Tor isn't routed through itself** — confirm `owner --uid-owner debian-tor` matches the real Tor user on your OS (`ps aux | grep tor`); same check for `redsocks`.
+6. **VPN rotation actually rotates** — set `vpn.rotation.interval_seconds: 20`, watch `logs/system.log` for the rotation message, confirm `cli.py --status` reflects it.
+7. **Watchdog detects a real drop** — kill WireGuard from the Pi console directly, watch for a `CRITICAL` watchdog message within `firewall.watchdog_interval_seconds`.
 
-2. **DNS doesn't leak** — in `tor` mode, from a client device:
-   ```bash
-   nslookup example.com
-   ```
-   Confirm port 53 is redirected via `sudo iptables -t nat -S PREROUTING`
-   (should match `tor.dns_port` from `config.yaml`).
+---
 
-3. **You don't lock yourself out** — test the kill switch from an SSH
-   session on a LAN client (not the Pi's own console); confirm the session
-   survives `enable_kill_switch()`.
+# 📝 Architecture Notes
 
-4. **IPv6 isn't leaking:**
-   ```bash
-   curl -6 https://ifconfig.co   # should fail/timeout if block_ipv6: true
-   ```
+**redsocks and UDP:** redsocks only proxies TCP. This fails closed, not open — default `OUTPUT`/`FORWARD` policy is `DROP`, and unmatched UDP has nowhere to go, so it's dropped rather than sent unprotected. In VPN mode client UDP goes through the tunnel fine; in Tor mode, non-DNS UDP (VoIP, games, QUIC/HTTP3) is simply blocked.
 
-5. **Tor isn't routed through itself** — confirm the `owner
-   --uid-owner debian-tor` rule matches the actual user Tor runs as on your
-   OS version (`ps aux | grep tor`); same check for the `redsocks` uid.
+**Dashboard data:** short-poll (2s interval), not push-based. Reads real data from `Controller.status()` — actual bandwidth from consecutive `psutil` snapshots, actual rotation countdown, actual CPU/mem. A push-based view (SocketIO/SSE) would be a future upgrade.
 
-6. **VPN rotation actually rotates** — set
-   `vpn.rotation.interval_seconds: 20` temporarily, watch `logs/system.log`
-   for `Rotating VPN: profile1 -> profile2`, confirm `cli.py --status`
-   reflects the new profile each time.
+---
 
-7. **Watchdog detects a real drop** — in `vpn` mode, kill WireGuard from
-   the Pi console directly (`sudo wg-quick down wg0`, not via the CLI) and
-   watch for a `CRITICAL` watchdog message in `logs/system.log` within
-   `firewall.watchdog_interval_seconds`. Client devices should lose
-   connectivity immediately rather than fall back to raw internet.
+# ⚠ Known Limitations
 
-## Known limitations
+- Not audited for production/adversarial use.
+- redsocks doesn't proxy UDP — proxy mode's DNS handling needs a deliberate choice (route via Tor's DNSPort, or a resolver reachable through the upstream proxy).
+- VPN-mode DNS relies on client DHCP config pointing at a resolver reachable only through the tunnel — it isn't forcibly redirected the way Tor/proxy mode is.
+- No dashboard authentication — SSH-tunnel only.
 
-- **Not audited for production/adversarial use.**
-- **redsocks doesn't proxy UDP.** Proxy mode's DNS handling needs a
-  deliberate choice: route DNS through Tor's DNSPort alongside redsocks, or
-  point clients at a resolver reachable via the upstream proxy.
-- **VPN-mode DNS** relies on client devices being configured (via DHCP) to
-  use a resolver reachable only through the tunnel — it isn't forcibly
-  redirected the way Tor/proxy mode's DNS is. To force it, add a NAT rule
-  pointing port 53 at your VPN's DNS server, mirroring the Tor-mode pattern
-  in `firewall.py`.
-- **No dashboard authentication** — SSH-tunnel only, see above.
+---
 
-## Project structure
+# 🛣 Roadmap
 
-```
-nyx/
-├── main.py              # daemon: owns Controller, IPC socket, monitor loop
-├── cli.py                # CLI client (talks to daemon over Unix socket)
-├── config.yaml
-├── core/
-│   ├── config_loader.py
-│   ├── controller.py     # mode-switch ordering & fail-closed logic (vpn|tor only)
-│   ├── scheduler.py      # VPN rotation thread
-│   └── watchdog.py       # kill-switch watchdog thread
-├── network/
-│   ├── vpn_manager.py    # multi-profile support for rotation
-│   ├── tor_manager.py
-│   ├── proxy_manager.py  # always-on, not part of mode switching
-│   ├── firewall.py       # kill switch, always-on proxy chain, DNS leak protection, NAT rules
-│   └── routing.py        # IP forwarding
-├── monitor/
-│   ├── ip_monitor.py
-│   └── bandwidth.py
-├── logger/
-│   └── logger.py
-├── dashboard/
-│   ├── app.py             # Flask, talks to daemon over Unix socket
-│   └── templates/index.html
-├── scripts/
-│   ├── setup.sh
-│   ├── redsocks.conf.template
-│   ├── torrc.additions
-│   └── nyx.service
-└── logs/
-```
+## Phase 1
+- Fail-closed kill switch, mode switching, DNS/IPv6 leak protection
 
-## License
+## Phase 2
+- VPN rotation, watchdog, dashboard wired to live backend, thread-safe controller
 
-MIT
+## Phase 3
+- Client-traffic double-wrapping (proxy → VPN)
+- Push-based dashboard (SocketIO/SSE)
+- Dashboard authentication
+
+## Phase 4
+- Multi-Pi / mesh configuration
+- Packaged installer / image
+
+---
+
+# ⚠ Disclaimer
+
+Nyx is intended for personal privacy and educational use. It is a hobby project, not a hardened or audited security appliance — evaluate it accordingly if your threat model is serious. Users are responsible for complying with all applicable laws and regulations, including local laws around VPN/Tor use.
+
+---
+
+# 📜 License
+
+MIT License
+
+---
+
+## 👨‍💻 Author
+
+<p align="center">
+  <b>Your Name</b><br>
+  ⭐ If you find this project useful, consider starring the repository
+</p>
