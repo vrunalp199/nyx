@@ -196,7 +196,7 @@ nyx/
 # ⚙ Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/nyx
+git clone https://github.com/vrunalp199/nyx
 cd nyx
 sudo bash scripts/setup.sh
 ```
