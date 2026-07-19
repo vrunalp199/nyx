@@ -324,6 +324,6 @@ MIT License
 ## 👨‍💻 Author
 
 <p align="center">
-  <b>Your Name</b><br>
+  <b>Vrunal Patil</b><br>
   ⭐ If you find this project useful, consider starring the repository
 </p>
